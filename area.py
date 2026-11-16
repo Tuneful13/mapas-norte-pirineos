@@ -1,12 +1,15 @@
-"""Construye el contorno de la zona del mapa (archivo .poly de Osmosis).
+"""Contornos de los mapas (archivos .poly de Osmosis).
 
-Uso: python area.py salida.poly
+Uso:
+  python area.py salida.poly    contorno total; imprime su caja envolvente
+  python area.py --zonas DIR    DIR/<id>.poly de cada zona descargable;
+                                imprime "id|nombre|caja" por línea
 
-Zona: Cantabria, La Rioja, País Vasco y Navarra (límites de Geofabrik)
+Zona total: Cantabria, La Rioja, País Vasco y Navarra (límites de Geofabrik)
 más una franja que cubre todo el Pirineo, lado español, Andorra y lado
 francés, de Hendaya al cabo de Creus. Se calcula la unión real para que
 no haya solapes (osmium trataría un solape como un hueco).
-Imprime la caja envolvente, que usan contours.py y build.sh.
+Zonas descargables: ver ZONES.
 """
 
 import sys
@@ -64,15 +67,61 @@ def write_poly(shape, path):
         f.write("END\n")
 
 
+# Zonas que se descargan por separado en la app:
+# (id, nombre, .poly de Geofabrik, ¿recortar a la franja del Pirineo?)
+ZONES = [
+    ("cantabria", "Cantabria", "cantabria", False),
+    ("la-rioja", "La Rioja", "la-rioja", False),
+    ("pais-vasco", "País Vasco", "pais-vasco", False),
+    ("navarra", "Navarra", "navarra", False),
+    ("pirineo-aragones", "Pirineo aragonés", "aragon", True),
+    ("pirineo-catalan", "Pirineo catalán", "cataluna", True),
+    ("andorra", "Andorra", "andorra", False),
+    ("pirineo-frances", "Pirineo francés", "france", True),
+]
+
+
+def _finish(shape):
+    # Pequeño margen (~1 km) para no cortar caminos justo en la frontera y
+    # que las zonas vecinas se solapen un poco (sin huecos entre ellas).
+    return shape.buffer(0.01).simplify(0.002)
+
+
+def _bounds(shape):
+    w, s, e, n = shape.bounds
+    return f"{w:.2f},{s:.2f},{e:.2f},{n:.2f}"
+
+
+def zones():
+    """[(id, nombre, forma)] de cada zona descargable."""
+    band = box(*PYRENEES)
+    out = []
+    for zid, name, poly, clip in ZONES:
+        shape = read_poly(f"data/sources/{poly}.poly")
+        if clip:
+            shape = shape.intersection(band)
+        out.append((zid, name, _finish(shape)))
+    return out
+
+
 def main():
+    """
+    python area.py zona.poly      -> contorno total; imprime su caja
+    python area.py --zonas DIR    -> DIR/<id>.poly de cada zona; imprime
+                                     "id|nombre|caja" por línea
+    """
+    if len(sys.argv) == 3 and sys.argv[1] == "--zonas":
+        outdir = sys.argv[2]
+        for zid, name, shape in zones():
+            write_poly(shape, f"{outdir}/{zid}.poly")
+            print(f"{zid}|{name}|{_bounds(shape)}")
+        return
     out = sys.argv[1]
     parts = [read_poly(f"data/sources/{r}.poly") for r in REGIONS]
     parts.append(box(*PYRENEES))
-    # Pequeño margen (~1 km) para no cortar caminos justo en la frontera.
-    area = unary_union(parts).buffer(0.01).simplify(0.002)
+    area = _finish(unary_union(parts))
     write_poly(area, out)
-    w, s, e, n = area.bounds
-    print(f"{w:.2f},{s:.2f},{e:.2f},{n:.2f}")
+    print(_bounds(area))
 
 
 if __name__ == "__main__":
