@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visor mapa vectorial</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/pmtiles@3.2.1/dist/pmtiles.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; font: 14px system-ui, sans-serif; background: #f2efe9; }
+  #map { position: absolute; inset: 0; }
+  #panel { position: absolute; top: 10px; left: 10px; z-index: 1; background: #fff; padding: 10px 12px;
+           border-radius: 8px; box-shadow: 0 1px 4px #0003; max-width: 280px; }
+  #panel label { display: block; margin: 6px 0; }
+  #info { color: #555; font-size: 12px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div id="panel">
+  <strong>Mapa vectorial (prototipo)</strong>
+  <label>Mapa .pmtiles: <input type="file" id="pm" accept=".pmtiles"></label>
+  <label>Curvas .pmtiles (opcional): <input type="file" id="curvas" accept=".pmtiles"></label>
+  <label>Ruta .gpx (opcional): <input type="file" id="gpx" accept=".gpx"></label>
+  <div id="info">Elige data/mapa-base.pmtiles y luego data/curvas.pmtiles. No necesita servidor.</div>
+</div>
+<div id="map"></div>
+<script>
+const protocol = new pmtiles.Protocol();
+maplibregl.addProtocol('pmtiles', protocol.tile);
+
+const font = ['Noto Sans Regular'];
+const roadColor = ['match', ['get', 'class'],
+  ['motorway', 'trunk'], '#e892a2', 'primary', '#fcd6a4', 'secondary', '#f7fabf',
+  '#ffffff'];
+
+// Curvas de nivel: van entre el relieve y las carreteras.
+function contourLayers() {
+  const master = ['==', ['get', 'nivel'], '100'];
+  return [
+    { id: 'contour', type: 'line', source: 'curvas', 'source-layer': 'contour',
+      paint: { 'line-color': '#b08257',
+               'line-width': ['case', master, 1.1, 0.5],
+               'line-opacity': ['case', master, 0.9, 0.6] } },
+    { id: 'contour-label', type: 'symbol', source: 'curvas', 'source-layer': 'contour', minzoom: 13,
+      filter: master,
+      layout: { 'symbol-placement': 'line', 'text-field': ['to-string', ['get', 'ele']],
+                'text-font': font, 'text-size': 10 },
+      paint: { 'text-color': '#8a5a2b', 'text-halo-color': '#fff', 'text-halo-width': 1.2 } },
+  ];
+}
+
+let baseUrl = null, contourUrl = null;
+
+function style(url, curvasUrl) {
+  const s = {
+    version: 8,
+    glyphs: 'https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf',
+    sources: { omt: { type: 'vector', url, attribution: '© OpenStreetMap contributors · OpenMapTiles' } },
+    layers: [
+      { id: 'bg', type: 'background', paint: { 'background-color': '#f2efe9' } },
+      { id: 'landcover', type: 'fill', source: 'omt', 'source-layer': 'landcover', paint: {
+          'fill-color': ['match', ['get', 'class'], 'wood', '#add19e', 'grass', '#cdebb0', 'farmland', '#eef0d5',
+            'rock', '#e0dcd5', 'wetland', '#d6e9e1', 'sand', '#f5e9c6', 'ice', '#ffffff', '#dde8cc'],
+          'fill-opacity': 0.8 } },
+      { id: 'landuse', type: 'fill', source: 'omt', 'source-layer': 'landuse', paint: {
+          'fill-color': ['match', ['get', 'class'], 'residential', '#e8e2da', 'industrial', '#ebdbe8', '#e9e5dc'],
+          'fill-opacity': 0.7 } },
+      { id: 'park', type: 'fill', source: 'omt', 'source-layer': 'park', paint: {
+          'fill-color': '#c8facc', 'fill-opacity': 0.35, 'fill-outline-color': '#6aa86a' } },
+      { id: 'water', type: 'fill', source: 'omt', 'source-layer': 'water', paint: { 'fill-color': '#aad3df' } },
+      { id: 'waterway', type: 'line', source: 'omt', 'source-layer': 'waterway', paint: {
+          'line-color': '#aad3df', 'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.5, 14, 2] } },
+      { id: 'building', type: 'fill', source: 'omt', 'source-layer': 'building', minzoom: 13,
+        paint: { 'fill-color': '#d9d0c9', 'fill-outline-color': '#bfb3a8' } },
+      { id: 'boundary', type: 'line', source: 'omt', 'source-layer': 'boundary',
+        filter: ['<=', ['get', 'admin_level'], 4],
+        paint: { 'line-color': '#9e6a9e', 'line-width': 1.2, 'line-dasharray': [3, 2] } },
+      // Senderos y pistas: lo que importa para la montaña
+      { id: 'path', type: 'line', source: 'omt', 'source-layer': 'transportation',
+        filter: ['in', ['get', 'class'], ['literal', ['path', 'track']]], minzoom: 11,
+        paint: { 'line-color': ['match', ['get', 'class'], 'track', '#996600', '#d4402a'],
+                 'line-width': ['interpolate', ['linear'], ['zoom'], 11, 0.6, 16, 2],
+                 'line-dasharray': [2, 1.5] } },
+      { id: 'road-casing', type: 'line', source: 'omt', 'source-layer': 'transportation',
+        filter: ['!', ['in', ['get', 'class'], ['literal', ['path', 'track', 'rail', 'transit']]]],
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#b0a69c', 'line-width': ['interpolate', ['linear'], ['zoom'], 8, 1, 16, 9] } },
+      { id: 'road', type: 'line', source: 'omt', 'source-layer': 'transportation',
+        filter: ['!', ['in', ['get', 'class'], ['literal', ['path', 'track', 'rail', 'transit']]]],
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': roadColor, 'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.5, 16, 7] } },
+      { id: 'rail', type: 'line', source: 'omt', 'source-layer': 'transportation',
+        filter: ['==', ['get', 'class'], 'rail'], paint: { 'line-color': '#707070', 'line-width': 1 } },
+      { id: 'road-name', type: 'symbol', source: 'omt', 'source-layer': 'transportation_name', minzoom: 13,
+        layout: { 'symbol-placement': 'line', 'text-field': ['get', 'name'], 'text-font': font, 'text-size': 11 },
+        paint: { 'text-color': '#333', 'text-halo-color': '#fff', 'text-halo-width': 1.2 } },
+      { id: 'peak', type: 'symbol', source: 'omt', 'source-layer': 'mountain_peak', minzoom: 10,
+        layout: { 'text-field': ['concat', '▲ ', ['get', 'name'], '\n', ['to-string', ['get', 'ele']], ' m'],
+                  'text-font': font, 'text-size': 11, 'text-anchor': 'top' },
+        paint: { 'text-color': '#6b4a2b', 'text-halo-color': '#fff', 'text-halo-width': 1.2 } },
+      { id: 'place', type: 'symbol', source: 'omt', 'source-layer': 'place',
+        layout: { 'text-field': ['get', 'name'], 'text-font': font,
+                  'text-size': ['match', ['get', 'class'], 'city', 16, 'town', 14, 'village', 12, 11] },
+        paint: { 'text-color': '#222', 'text-halo-color': '#fff', 'text-halo-width': 1.5 } },
+    ],
+  };
+  if (curvasUrl) {
+    s.sources.curvas = { type: 'vector', url: curvasUrl, attribution: '© Copernicus DEM GLO-30' };
+    const i = s.layers.findIndex((l) => l.id === 'boundary');
+    s.layers.splice(i, 0, ...contourLayers());
+  }
+  return s;
+}
+
+function refreshStyle() {
+  if (baseUrl) map.setStyle(style(baseUrl, contourUrl));
+}
+
+async function openPmtiles(file) {
+  const p = new pmtiles.PMTiles(new pmtiles.FileSource(file));
+  protocol.add(p);
+  return { url: 'pmtiles://' + file.name, header: await p.getHeader() };
+}
+
+const map = new maplibregl.Map({
+  container: 'map', style: { version: 8, sources: {}, layers: [] },
+  center: [-2.2, 42.9], zoom: 7.5, maxZoom: 18, hash: true,
+});
+map.addControl(new maplibregl.NavigationControl());
+map.addControl(new maplibregl.ScaleControl());
+
+document.getElementById('pm').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const { url, header: h } = await openPmtiles(file);
+  baseUrl = url;
+  refreshStyle();
+  map.fitBounds([[h.minLon, h.minLat], [h.maxLon, h.maxLat]], { duration: 0 });
+  document.getElementById('info').textContent =
+    `${file.name}: ${(file.size / 1048576).toFixed(1)} MB · zoom ${h.minZoom}-${h.maxZoom}`;
+});
+
+document.getElementById('curvas').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  contourUrl = (await openPmtiles(file)).url;
+  refreshStyle();
+  document.getElementById('info').textContent +=
+    ` · curvas ${(file.size / 1048576).toFixed(1)} MB`;
+});
+
+document.getElementById('gpx').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const xml = new DOMParser().parseFromString(await file.text(), 'application/xml');
+  const coords = [...xml.querySelectorAll('trkpt, rtept')]
+    .map((p) => [+p.getAttribute('lon'), +p.getAttribute('lat')]);
+  if (!coords.length) return;
+  const data = { type: 'Feature', geometry: { type: 'LineString', coordinates: coords } };
+  if (map.getSource('gpx')) map.getSource('gpx').setData(data);
+  else {
+    map.addSource('gpx', { type: 'geojson', data });
+    map.addLayer({ id: 'gpx', type: 'line', source: 'gpx',
+      paint: { 'line-color': '#0050ff', 'line-width': 4, 'line-opacity': 0.8 } });
+  }
+  const b = coords.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(coords[0], coords[0]));
+  map.fitBounds(b, { padding: 40 });
+});
+</script>
+</body>
+</html>

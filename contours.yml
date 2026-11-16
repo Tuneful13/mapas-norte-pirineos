@@ -1,0 +1,26 @@
+schema_name: Curvas de nivel
+schema_description: Curvas de nivel cada 10 m de País Vasco + Navarra (Copernicus GLO-30)
+attribution: '© Copernicus DEM GLO-30 (DLR, Airbus, ESA)'
+
+sources:
+  curvas:
+    type: geojson
+    local_path: data/contours.geojson
+
+layers:
+- id: contour
+  features:
+  - source: curvas
+    geometry: line
+    # Maestras (cada 100 m) desde z10, intermedias (50 m) desde z12, todas desde z13
+    min_zoom:
+      default_value: 13
+      overrides:
+        10:
+          nivel: "100"
+        12:
+          nivel: "50"
+    attributes:
+    - key: ele
+      type: integer
+    - key: nivel

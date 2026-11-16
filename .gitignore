@@ -1,0 +1,7 @@
+data/
+.venv/
+.conda/
+planetiler.jar
+v*/
+__pycache__/
+.claude/
